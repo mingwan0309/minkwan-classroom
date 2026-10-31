@@ -104,6 +104,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
 <div class="hud-top">
   <button class="hbtn icon" id="snd-btn" title="소리 켜기/끄기">🔊</button>
   <div class="cd-chip" id="cd-chip">🧹 3:00</div>
+  <div class="cd-chip" id="online-chip" style="display:none">👥 1명</div>
   <div class="study-box"><div class="l">오늘 공부한 시간</div><div class="t" id="today-t">00:00:00</div></div>
 </div>
 <div class="gauge"><div class="l"><span>👀 선생님 눈치</span><span id="gauge-pct">0%</span></div><div class="bar"><div class="fill" id="gauge-fill"></div></div></div>
@@ -136,6 +137,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
 
 <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/cannon.js/0.6.2/cannon.min.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.12.2/firebase-database-compat.js"></script>
 <script>
 (function(){
 'use strict';
@@ -1199,6 +1202,7 @@ function update(dt){
   nameSp.visible = bubbleT <= 0;   // 말풍선이 뜨면 이름표는 숨김(겹침 방지)
   placeBubble();
 
+  netUpdate(dt);
   clockAcc += dt; if (clockAcc > 1) { clockAcc = 0; drawClock(); }
 }
 
@@ -1280,6 +1284,121 @@ function placeBubble(){
   bubble.classList.toggle('edge', edge);
 }
 
+// ═══════════════ 같이 접속 (교실 전용 Firebase Realtime Database) ═══════════════
+// players/{netId} = { n:이름, x, z, y:바라보는 방향, s:앉았나, t:서버시각 } — 나가면 자동 삭제(onDisconnect)
+var FB_CONFIG = {
+  apiKey: 'AIzaSyBlCwmmFvEcQ6uCAMety1C0ak8YV8q8WXM',
+  authDomain: 'minkwan-classroom.firebaseapp.com',
+  databaseURL: 'https://minkwan-classroom-default-rtdb.asia-southeast1.firebasedatabase.app',
+  projectId: 'minkwan-classroom',
+  storageBucket: 'minkwan-classroom.firebasestorage.app',
+  messagingSenderId: '656986437070',
+  appId: '1:656986437070:web:1bbcf1772450112c7c279f'
+};
+var netId = (Math.random().toString(36).slice(2, 10) + Math.random().toString(36).slice(2, 10)).slice(0, 14);
+var others = {}, netRef = null, netOffset = 0, MAX_OTHERS = 40;
+var onlineChip = document.getElementById('online-chip');
+var AV_COLORS = [0xef4444, 0xf97316, 0xeab308, 0x22c55e, 0x14b8a6, 0x3b82f6, 0x8b5cf6, 0xec4899];
+function hashOf(s){ var h = 0; for (var i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0; return Math.abs(h); }
+function drawNameLabel(tex, text){
+  var c = tex.image, g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  g.font = '800 34px Pretendard, sans-serif';
+  var w = Math.min(c.width - 4, g.measureText(text).width + 36);
+  g.fillStyle = 'rgba(15,23,42,.82)';
+  g.beginPath(); if (g.roundRect) g.roundRect((c.width - w) / 2, 4, w, c.height - 8, 26); else g.rect((c.width - w) / 2, 4, w, c.height - 8); g.fill();
+  g.fillStyle = '#fff'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(text, c.width / 2, c.height / 2 + 2, c.width - 30);
+  tex.needsUpdate = true;
+}
+function makeAvatar(id){
+  var g = new THREE.Group(); scene.add(g);
+  var col = lam(AV_COLORS[hashOf(id) % AV_COLORS.length]), pants = lam(0x334155);
+  var legs = [-1, 1].map(function(s){
+    var hip = new THREE.Group(); hip.position.set(s * 0.1, 0.8, 0); g.add(hip);
+    box(0.14, 0.78, 0.16, pants, 0, -0.39, 0, hip); return hip;
+  });
+  box(0.44, 0.6, 0.26, col, 0, 1.1, 0, g);                                      // 몸통(교복 색)
+  var head = new THREE.Mesh(new THREE.SphereGeometry(0.17, 18, 14), skin); head.position.y = 1.58; g.add(head);
+  var hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.178, 18, 12, 0, Math.PI * 2, 0, Math.PI * 0.55), hairMat);
+  hairCap.position.set(0, 1.6, -0.01); g.add(hairCap);
+  var eyeM = lam(0x111111);
+  box(0.03, 0.035, 0.02, eyeM, -0.06, 1.6, 0.16, g); box(0.03, 0.035, 0.02, eyeM, 0.06, 1.6, 0.16, g);
+  var tex = canvasTex(320, 72, function(){});
+  var sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  sp.scale.set(1.0, 0.225, 1); sp.position.y = 2.02; sp.renderOrder = 5; g.add(sp);
+  var sh = new THREE.Mesh(new THREE.CircleGeometry(0.3, 20), shadow.material); sh.rotation.x = -Math.PI / 2; sh.position.y = 0.012; g.add(sh);
+  return { g: g, legs: legs, tex: tex, name: null, x: 0, z: 0, yaw: 0, sit: 0, ph: 0, data: null };
+}
+function netUpsert(snap){
+  if (snap.key === netId) return;
+  var v = snap.val(); if (!v || typeof v.x !== 'number' || typeof v.z !== 'number') return;
+  var o = others[snap.key];
+  if (!o) {
+    if (Object.keys(others).length >= MAX_OTHERS) return;
+    o = others[snap.key] = makeAvatar(snap.key);
+    o.x = v.x; o.z = v.z; o.yaw = v.y || 0;
+  }
+  var nm = String(v.n || '').slice(0, 12) || '친구';
+  if (o.name !== nm) { o.name = nm; drawNameLabel(o.tex, nm); }
+  o.data = v;
+}
+function netRemove(snap){
+  var o = others[snap.key]; if (!o) return;
+  scene.remove(o.g); delete others[snap.key];
+}
+function netStart(){
+  if (netRef || !window.firebase || !firebase.database) return;   // 불러오지 못하면 혼자 하는 교실 그대로
+  try {
+    if (!firebase.apps.length) firebase.initializeApp(FB_CONFIG);
+    var db = firebase.database();
+    db.ref('.info/serverTimeOffset').on('value', function(s){ netOffset = s.val() || 0; });
+    netRef = db.ref('players/' + netId);
+    db.ref('.info/connected').on('value', function(s){
+      if (!s.val()) return;
+      netRef.onDisconnect().remove();
+      netSend();
+    });
+    var pl = db.ref('players');
+    pl.on('child_added', netUpsert); pl.on('child_changed', netUpsert); pl.on('child_removed', netRemove);
+    onlineChip.style.display = '';
+  } catch(e) { console.warn('[민관이교실] 같이 접속 연결 실패', e); netRef = null; }
+}
+function normYaw(a){ var t = Math.PI * 2; return +(((a % t) + t) % t).toFixed(2); }
+var netLast = null, netSendT = 0, netBeatT = 0;
+function netSend(){
+  if (!netRef) return;
+  netLast = { x: +player.x.toFixed(2), z: +player.z.toFixed(2), y: normYaw(player.yaw), s: !!player.seated };
+  netRef.set({ n: myName || '', x: netLast.x, z: netLast.z, y: netLast.y, s: netLast.s, t: firebase.database.ServerValue.TIMESTAMP })
+    .catch(function(e){ console.warn('[민관이교실] 위치 보내기 실패', e); });
+}
+function netUpdate(dt){
+  if (netRef && started) {
+    netSendT -= dt; netBeatT -= dt;
+    var changed = !netLast || Math.abs(player.x - netLast.x) > 0.03 || Math.abs(player.z - netLast.z) > 0.03 ||
+      Math.abs(angDiff(player.yaw, netLast.y)) > 0.08 || !!player.seated !== netLast.s;
+    if ((changed && netSendT <= 0) || netBeatT <= 0) { netSend(); netSendT = 0.12; netBeatT = 10; }   // 움직일 때 초당 8번, 가만히 있으면 10초마다
+  }
+  var now = Date.now() + netOffset, count = netRef ? 1 : 0, k = Math.min(1, dt * 10);
+  for (var id in others) {
+    var o = others[id], v = o.data;
+    if (!v || (typeof v.t === 'number' && now - v.t > 40000)) { o.g.visible = false; continue; }   // 오래 소식 없는 사람은 숨김
+    o.g.visible = true; count++;
+    var px = o.x, pz = o.z;
+    o.x += (v.x - o.x) * k; o.z += (v.z - o.z) * k;
+    o.yaw += angDiff(v.y || 0, o.yaw) * k;
+    o.sit += ((v.s ? 1 : 0) - o.sit) * k;
+    var sp = Math.hypot(o.x - px, o.z - pz) / Math.max(dt, 0.001);
+    if (sp > 0.3) o.ph += dt * 9; else o.ph *= 0.8;
+    var sw = Math.sin(o.ph) * Math.min(0.6, sp * 0.25);
+    o.legs[0].rotation.x = sw - o.sit * 1.4; o.legs[1].rotation.x = -sw - o.sit * 1.4;
+    o.g.position.set(o.x, -o.sit * 0.36, o.z);
+    o.g.rotation.y = o.yaw + Math.PI;
+  }
+  if (netRef) { var t = '👥 ' + count + '명'; if (onlineChip.textContent !== t) onlineChip.textContent = t; }
+}
+window.addEventListener('pagehide', function(){ if (netRef) netRef.remove(); });
+
 function resize(){
   var w = window.innerWidth, h = window.innerHeight;
   renderer.setSize(w, h, false);
@@ -1320,6 +1439,7 @@ enterBtn.addEventListener('click', function(){
   document.getElementById('intro').style.display = 'none';
   started = true;
   ac();
+  netStart();
   if (window.speechSynthesis) { pickVoice(); }
   requestLock();
   setTimeout(function(){ say(pick(LINES.welcome), false, 4); }, 600);

@@ -43,5 +43,14 @@
 - 칠판 전체가 카운트다운(`drawBoard`, 매초 다시 그림), 마지막 10초는 빨갛게 깜빡임. 화면 위쪽 🧹 칩에도 같이 표시.
 - 리셋 순간: 화면이 하얗게 번쩍 + 종소리, 흩어진 종이 조각·종이뭉치는 사라지고, 움직인 물건은 1.3초 동안 둥실 떠서 제자리로 돌아감(찢은 숙제는 제자리에서 다시 커지며 나타남) → 선생님 "자, 다 원래대로 돌려놨다…".
 
+## 같이 접속 (다른 학생이 보이고 머리 위에 이름)
+- 배포: GitHub Pages https://mingwan0309.github.io/minkwan-classroom/ (저장소 `mingwan0309/minkwan-classroom`, main 브랜치 루트).
+- 교실 전용 Firebase 프로젝트 `minkwan-classroom`의 **Realtime Database**(싱가포르) 사용 — 학원 mkmath와 무관. 설정값은 index.html `FB_CONFIG`.
+- `players/{netId}` = `{n 이름, x, z, y 방향, s 앉음, t 서버시각}`. 움직일 때 초당 8번, 가만히 있으면 10초마다 보냄. 창을 닫으면 `onDisconnect`로 자동 삭제, 40초 넘게 소식 없는 사람은 숨김. 최대 40명 그림.
+- 다른 학생은 교복색 캐릭터 + 머리 위 이름표(이름 안 적으면 "친구"). 걷기·앉기 동작도 보임.
+- **보이는 건 위치·이름뿐이고, 엎고 던진 물건은 각자 화면에서만 움직임**(물리는 기기마다 따로). 3분 원상복구는 실제 시계 기준이라 모두 동시에 일어남.
+- 규칙: `database.rules.json` 내용을 Firebase 콘솔 → Realtime Database → 규칙 탭에 붙여넣기.
+- Claude 링크(아티팩트) 판은 외부 서버 접속이 막혀 있어 같이 접속이 안 되고 혼자 하는 교실로 나옴.
+
 ## 점검용
 `window.__classroom` — player / teacher / say / setWander / objs / doAction / getTarget / setTarget / reset(즉시 원상복구) / world.
