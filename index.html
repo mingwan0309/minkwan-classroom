@@ -24,6 +24,11 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
 .gauge .l{font-size:12px;font-weight:700;color:#e2e8f0;margin-bottom:5px;display:flex;justify-content:space-between;}
 .gauge .bar{height:8px;border-radius:5px;background:rgba(255,255,255,.15);overflow:hidden;}
 .gauge .fill{height:100%;width:0;border-radius:5px;background:linear-gradient(90deg,#22c55e,#facc15,#ef4444);transition:width .2s;}
+.gauge.hp{top:calc(122px + env(safe-area-inset-top));}
+.gauge.hp .fill{width:100%;background:#ef4444;}
+.gauge.hp.chase{background:rgba(234,88,12,.85);animation:cdPulse .45s ease-in-out infinite alternate;}
+#chase-warn{position:fixed;left:50%;top:calc(66px + env(safe-area-inset-top));transform:translateX(-50%);background:#dc2626;color:#fff;font-size:16px;font-weight:900;padding:10px 18px;border-radius:14px;z-index:7;display:none;pointer-events:none;white-space:nowrap;box-shadow:0 8px 24px rgba(220,38,38,.5);animation:cdPulse .4s ease-in-out infinite alternate;}
+#out-msg{display:none;margin:0 0 14px;background:#7f1d1d;border:2px solid #f87171;border-radius:14px;padding:12px 14px;font-size:15px;font-weight:800;line-height:1.5;}
 
 /* 말풍선 */
 #bubble{position:fixed;left:0;top:0;transform:translate(-50%,-100%);width:max-content;max-width:260px;background:#fff;color:#0f172a;border-radius:16px;padding:10px 14px;font-size:15px;font-weight:800;line-height:1.4;text-align:center;box-shadow:0 8px 24px rgba(0,0,0,.35);z-index:6;pointer-events:none;opacity:0;transition:opacity .25s;}
@@ -108,6 +113,8 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
   <div class="study-box"><div class="l">오늘 공부한 시간</div><div class="t" id="today-t">00:00:00</div></div>
 </div>
 <div class="gauge"><div class="l"><span>👀 선생님 눈치</span><span id="gauge-pct">0%</span></div><div class="bar"><div class="fill" id="gauge-fill"></div></div></div>
+<div class="gauge hp" id="hp-wrap"><div class="l"><span>❤️ 민관쌤 체력</span><span id="hp-num">100</span></div><div class="bar"><div class="fill" id="hp-fill"></div></div></div>
+<div id="chase-warn">🏃 민관쌤이 나를 쫓아와요! 도망가!</div>
 <div id="bubble"></div>
 <div id="flash"></div>
 <button id="act-btn"></button>
@@ -122,6 +129,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
   <div class="intro-card">
     <div class="intro-face"></div>
     <h1>🏫 민관이교실</h1>
+    <div id="out-msg"></div>
     <p>민관쌤이 교실 앞에서 감독하고 있어요.<br>물건 앞에 가면 버튼이 나와요. <b>책상 엎기, 의자 던지기, 숙제 찢기…</b></p>
     <p>칠판의 카운트다운이 끝나면 <b>1분마다 교실이 원래대로</b> 돌아와요.</p>
     <div class="intro-keys" id="intro-keys"></div>
@@ -691,9 +699,96 @@ teacherBody.addEventListener('collide', function(e){
   if (!e.body || !e.body.obj || T.hitCool > 0) return;
   var v = 0; try { v = Math.abs(e.contact.getImpactVelocityAlongNormal()); } catch(err) {}
   if (v < 2.2) return;
-  T.hitCool = 2.5; T.hitT = 0.8;
+  var o = e.body.obj;
+  T.hitCool = 0.6; T.hitT = 0.8;
+  // 같이 접속 중이면 물리는 모든 화면에서 돌기 때문에, 그 물건을 던진 학생 화면에서만 체력을 깎음(중복 방지)
+  if (netDb && o.lastBy !== netId) return;
   chaos('hit', true);
+  teacherDamage(TDMG[o.kind] || 5);
 });
+
+// ── 선생님 체력 → 0이면 마지막에 맞힌 학생을 쫓아감 → 잡히면 아웃 ──
+// 같이 접속 중이면 teacher = { hp, hb:맞힌사람id, hn:이름, c:쫓는대상id, cn:이름, cs:쫓기 시작 시각, out:잡힌 이름, t }
+var T_MAX_HP = 100, TDMG = { chair: 20, desk: 25, lectern: 25, book: 8, chalk: 4, eraser: 6, ball: 12, trash: 12 };
+var CHASE_SPEED = 2.2;   // 학생 걷는 속도와 똑같이
+var tHp = T_MAX_HP, tChase = null, tChaseName = '', tChaseStart = 0, chaseTalkT = 0, chaseLostT = 0;
+var CHASE_LINES = ['{N}거기 서!!', '{N}도망가도 소용없다!', '{N}교실에서 뛰지 마!!', '{N}이리 와! 선생님 화났어!'];
+function teacherDamage(d){
+  if (tChase) return;
+  if (!netDb) {   // 혼자 할 때
+    tHp = Math.max(0, tHp - d); renderHp();
+    if (tHp <= 0) setChase(netId, myName, serverNow());
+    return;
+  }
+  netDb.ref('teacher').transaction(function(cur){
+    cur = cur || {};
+    if (cur.c) return;   // 이미 누굴 쫓는 중이면 그대로
+    var hp = Math.max(0, (typeof cur.hp === 'number' ? cur.hp : T_MAX_HP) - d);
+    var r = { hp: hp, hb: netId, hn: myName || '', t: firebase.database.ServerValue.TIMESTAMP };
+    if (hp <= 0) { r.c = netId; r.cn = myName || ''; r.cs = Math.round(serverNow()); }
+    return r;
+  }).catch(function(e){ console.warn('[민관이교실] 체력 저장 실패', e); });
+}
+function setChase(id, name, start){
+  tChase = id; tChaseName = name || ''; tChaseStart = start || serverNow(); chaseTalkT = 0; chaseLostT = 0;
+  T.mode = 'chase';
+  var me = id === netId;
+  say(me ? '{N}너 이리 와!! 오늘 혼 좀 나자!' : (callName(name) ? callName(name) + ', ' : '') + '너 이리 와!! 오늘 혼 좀 나자!', true, 3.5);
+  hpWrap.classList.add('chase');
+  if (me) chaseWarn.style.display = 'block';
+}
+function endChase(outName){
+  var wasMe = tChase === netId;
+  tChase = null; tChaseName = ''; tHp = T_MAX_HP;
+  T.mode = 'pause'; T.wait = 1.5; pickPatrol();
+  hpWrap.classList.remove('chase'); chaseWarn.style.display = 'none';
+  if (outName !== undefined && !wasMe) say('잡았다! ' + (outName || '친구') + ' 아웃!', true, 3);
+  renderHp();
+}
+function applyTeacherState(v){
+  v = v || {};
+  var hp = typeof v.hp === 'number' ? v.hp : T_MAX_HP;
+  if (hp < tHp && v.hb !== netId && !v.c) { T.hitT = 0.8; chaos('hit', true, String(v.hn || '').slice(0, 12)); }
+  tHp = hp;
+  if (v.c && v.c !== tChase) setChase(v.c, String(v.cn || '').slice(0, 12), v.cs);
+  else if (!v.c && tChase) endChase(v.out);
+  renderHp();
+}
+function clearChase(outName){
+  if (!netDb) { endChase(outName); return; }
+  var r = { hp: T_MAX_HP, t: firebase.database.ServerValue.TIMESTAMP };
+  if (outName !== undefined) r.out = outName;
+  netDb.ref('teacher').set(r).catch(function(){});
+}
+function caught(){
+  var nm = myName || '';
+  say('잡았다!! {N}교실에서 나가!', true, 2.5);
+  clearChase(nm);
+  setTimeout(kickOut, 1300);
+}
+// 머리 위 체력 막대
+var hpTex = canvasTex(256, 40, function(){});
+var hpSp = new THREE.Sprite(new THREE.SpriteMaterial({ map: hpTex, transparent: true, depthTest: false }));
+hpSp.scale.set(0.7, 0.11, 1); hpSp.position.y = 2.6; hpSp.renderOrder = 6; teacher.add(hpSp);
+var hpWrap = document.getElementById('hp-wrap'), hpFill = document.getElementById('hp-fill'), hpNum = document.getElementById('hp-num');
+var chaseWarn = document.getElementById('chase-warn');
+var hpShown = -1;
+function renderHp(){
+  var pct = Math.max(0, Math.min(1, tHp / T_MAX_HP));
+  hpFill.style.width = (pct * 100) + '%';
+  hpNum.textContent = tChase ? '🔥 0' : Math.round(tHp);
+  var key = Math.round(pct * 100) + (tChase ? 'c' : '');
+  if (key === hpShown) return; hpShown = key;
+  var g = hpTex.image.getContext('2d'), w = 256, h = 40;
+  g.clearRect(0, 0, w, h);
+  g.fillStyle = 'rgba(15,23,42,.85)'; g.fillRect(0, 0, w, h);
+  g.fillStyle = tChase ? '#f97316' : (pct > 0.5 ? '#22c55e' : pct > 0.25 ? '#facc15' : '#ef4444');
+  g.fillRect(4, 4, (w - 8) * (tChase ? 1 : pct), h - 8);
+  g.fillStyle = '#fff'; g.font = '900 24px Pretendard, sans-serif'; g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.fillText(tChase ? '🔥 화났다!' : '❤ ' + Math.round(tHp), w / 2, h / 2 + 1);
+  hpTex.needsUpdate = true;
+}
+renderHp();
 function onStage(z){ return z < RZ_FRONT + 2.4 ? 0.18 : 0; }
 function pickPatrol(){
   T.target.set((Math.random() * 2 - 1) * 3.6, 0, RZ_FRONT + 1.1 + Math.random() * 0.6);
@@ -748,7 +843,7 @@ function chaos(kind, force, who){   // who: 다른 학생이 한 경우 그 학�
   if (who !== undefined) { var cn = callName(who); line = line.indexOf('{N}') >= 0 ? line.replace('{N}', cn ? cn + ', ' : '') : (cn ? cn + ', ' : '') + line; }
   say(line, true, 3.2);
   if (who !== undefined) return;   // 다른 학생 일이면 나를 가리키지는 않음
-  if (angry || kind === 'hit') { T.mode = 'scold'; T.scoldT = angry ? 3.5 : 2.5; }
+  if ((angry || kind === 'hit') && !tChase) { T.mode = 'scold'; T.scoldT = angry ? 3.5 : 2.5; }
 }
 
 // ── 파탄 행동 ──
@@ -838,6 +933,7 @@ function doAction(){
     case 'trash': kick(o, 5.5, 2.2); spill(o); break;
     case 'ball': kick(o, 10, 3.2); break;
   }
+  o.lastBy = netId;   // 선생님이 이 물건에 맞으면 내가 맞힌 것
   chaos(o.kind);
   netAction(o);
   target = null;
@@ -1119,7 +1215,7 @@ function update(dt){
   var pct = Math.min(100, Math.round(wander / WARN_AT * 100));
   gaugeFill.style.width = pct + '%'; gaugePct.textContent = pct + '%';
 
-  if (started && !player.seated && wander >= WARN_AT && T.mode !== 'scold') {
+  if (started && !player.seated && wander >= WARN_AT && T.mode !== 'scold' && !tChase) {
     T.mode = 'scold'; T.scoldT = 5;
     say(LINES.warn[Math.min(warnCount, LINES.warn.length - 1)], true, 4.5);
     warnCount++;
@@ -1227,7 +1323,33 @@ function updateTeacher(dt){
   var toPlayerYaw = Math.atan2(player.x - p.x, player.z - p.z);
   var bodyYawTarget = T.yaw;
 
-  if (T.mode === 'scold') {
+  if (tChase) {
+    // 쫓아가기: 대상 학생 쪽으로 학생 걷는 속도 그대로 (책상은 밀치고 지나감)
+    var tgt = null;
+    if (tChase === netId) { if (started) tgt = { x: player.x, z: player.z }; }
+    else { var oo = others[tChase]; if (oo && oo.g.visible) tgt = { x: oo.x, z: oo.z }; }
+    if (!tgt) {
+      chaseLostT += dt;
+      if (chaseLostT > 5) { chaseLostT = -999; clearChase(); }   // 쫓던 학생이 나가버림
+    } else {
+      chaseLostT = 0;
+      var cx = tgt.x - p.x, cz = tgt.z - p.z, cd = Math.hypot(cx, cz);
+      bodyYawTarget = Math.atan2(cx, cz);
+      if (cd > 0.6) { var st = Math.min(cd - 0.6, CHASE_SPEED * dt); p.x += cx / cd * st; p.z += cz / cd * st; walking = true; }
+      if (tChase === netId && cd < 0.8 && started) { tChase = 'caught'; caught(); }
+    }
+    // 두 팔을 앞으로 뻗고 쫓아옴
+    armL.rotation.x += (-1.5 - armL.rotation.x) * Math.min(1, dt * 8);
+    armR.rotation.x += (-1.5 - armR.rotation.x) * Math.min(1, dt * 8);
+    chaseTalkT -= dt;
+    if (chaseTalkT <= 0 && tChase && tChase !== 'caught') {
+      chaseTalkT = 3.5;
+      var ln = pick(CHASE_LINES);
+      if (tChase === netId) say(ln, true, 2.6);
+      else { var cn = callName(tChaseName); say(ln.replace('{N}', cn ? cn + ', ' : ''), true, 2.6); }
+    }
+    if (serverNow() - tChaseStart > 90000 && tChase !== 'caught') { tChaseStart = serverNow(); clearChase(); }   // 90초 넘게 못 잡으면 포기
+  } else if (T.mode === 'scold') {
     // 멈춰 서서 학생 쪽을 보고 내 자리를 가리킴
     T.scoldT -= dt;
     bodyYawTarget = toPlayerYaw;
@@ -1266,10 +1388,10 @@ function updateTeacher(dt){
   head.rotation.x += (Math.max(-0.4, Math.min(0.4, pitch)) - head.rotation.x) * Math.min(1, dt * 6);
 
   // 걷기 애니메이션
-  if (walking) T.walkPhase += dt * 7; else T.walkPhase *= 0.85;
+  if (walking) T.walkPhase += dt * (tChase ? 11 : 7); else T.walkPhase *= 0.85;
   var sw = Math.sin(T.walkPhase) * (walking ? 0.5 : 0);
   legL.rotation.x = sw; legR.rotation.x = -sw;
-  if (T.mode !== 'scold') {
+  if (T.mode !== 'scold' && !tChase) {
     armL.rotation.x += (-sw * 0.7 - armL.rotation.x) * Math.min(1, dt * 8);
     armR.rotation.x += (sw * 0.7 - armR.rotation.x) * Math.min(1, dt * 8);
   }
@@ -1376,6 +1498,7 @@ function netStart(){
     var pl = db.ref('players');
     pl.on('child_added', netUpsert); pl.on('child_changed', netUpsert); pl.on('child_removed', netRemove);
     netDb = db;
+    db.ref('teacher').on('value', function(s){ applyTeacherState(s.val()); });
     db.ref('events').orderByChild('t').startAt(serverNow() - 3000).on('child_added', onRemoteEvent);
     netWatchState();
     onlineChip.style.display = '';
@@ -1405,6 +1528,7 @@ function onRemoteEvent(snap){
   if (typeof e.t === 'number' && serverNow() - e.t > 5000) return;   // 오래된 건 무시
   var o = objs[e.o];
   if (!o || o.anim || o.kind !== e.k) return;
+  o.lastBy = e.by;
   if (e.k === 'hw') { if (!o.gone) tear(o); }
   else if (!o.gone && Array.isArray(e.p) && e.p.length === 13) {
     var b = o.body, p = e.p;
@@ -1460,7 +1584,7 @@ function netSyncPoses(){
 function normYaw(a){ var t = Math.PI * 2; return +(((a % t) + t) % t).toFixed(2); }
 var netLast = null, netSendT = 0, netBeatT = 0;
 function netSend(){
-  if (!netRef) return;
+  if (!netRef || !started) return;   // 아웃돼서 첫 화면에 있을 땐 안 보냄
   netLast = { x: +player.x.toFixed(2), z: +player.z.toFixed(2), y: normYaw(player.yaw), s: !!player.seated };
   netRef.set({ n: myName || '', x: netLast.x, z: netLast.z, y: netLast.y, s: netLast.s, t: firebase.database.ServerValue.TIMESTAMP })
     .catch(function(e){ console.warn('[민관이교실] 위치 보내기 실패', e); });
@@ -1538,20 +1662,41 @@ enterBtn.addEventListener('click', function(){
   drawNameTag();
   nameInput.blur();
   document.getElementById('intro').style.display = 'none';
+  document.getElementById('out-msg').style.display = 'none';
   started = true;
   ac();
   netStart();
+  netLast = null; netSend();   // 다시 들어온 경우에도 바로 보이게
   if (window.speechSynthesis) { pickVoice(); }
   requestLock();
   setTimeout(function(){ say(pick(LINES.welcome), false, 4); }, 600);
 });
+// 선생님한테 잡히면 아웃: 첫 화면으로 쫓겨나고(다른 학생 화면에서도 사라짐) 다시 들어올 수 있음
+function kickOut(){
+  started = false;
+  if (player.seated) { player.seated = false; seatSec = 0; }
+  if (netRef) netRef.remove().catch(function(){});
+  if (document.pointerLockElement && document.exitPointerLock) document.exitPointerLock();
+  keys = {}; joyId = null; joyV.x = joyV.y = 0; knob.style.transform = '';
+  player.x = -1.5; player.z = 8.4; player.pitch = -0.05; wander = 0;
+  player.yaw = Math.atan2(player.x - 0, player.z - (RZ_FRONT + 1.4));
+  pausedEl.style.display = 'none';
+  var om = document.getElementById('out-msg');
+  om.textContent = '🚨 민관쌤한테 잡혀서 교실에서 쫓겨났어요! 다시 들어올 수 있어요.';
+  om.style.display = 'block';
+  enterBtn.textContent = '다시 들어가기';
+  var intro = document.getElementById('intro');
+  intro.style.display = 'flex'; intro.scrollTop = 0;
+  updateSeatUI();
+}
 // 처음엔 교실 뒤에서 선생님을 바라봄
 player.yaw = Math.atan2(player.x - 0, player.z - (RZ_FRONT + 1.4)) ;
 updateSeatUI();
 
 // 점검용
 window.__classroom = { player: player, teacher: T, tg: teacher, say: say, setWander: function(v){ wander = v; },
-  objs: objs, debris: debris, doAction: doAction, getTarget: function(){ return target; }, setTarget: function(o){ target = o; }, reset: startReset, world: world, syncPoses: function(){ if (netDb) netSyncPoses(); } };
+  objs: objs, debris: debris, doAction: doAction, getTarget: function(){ return target; }, setTarget: function(o){ target = o; }, reset: startReset, world: world, syncPoses: function(){ if (netDb) netSyncPoses(); },
+  damage: function(d){ teacherDamage(d); }, hp: function(){ return { hp: tHp, chase: tChase, me: netId }; } };
 })();
 </script>
 </body>

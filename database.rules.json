@@ -32,6 +32,20 @@
         "$other": { ".validate": false }
       }
     },
+    "teacher": {
+      ".read": true,
+      ".write": true,
+      ".validate": "newData.hasChildren(['hp', 't'])",
+      "hp": { ".validate": "newData.isNumber() && newData.val() >= 0 && newData.val() <= 100" },
+      "hb": { ".validate": "newData.isString() && newData.val().length <= 20" },
+      "hn": { ".validate": "newData.isString() && newData.val().length <= 12" },
+      "c": { ".validate": "newData.isString() && newData.val().length <= 20" },
+      "cn": { ".validate": "newData.isString() && newData.val().length <= 12" },
+      "cs": { ".validate": "newData.isNumber()" },
+      "out": { ".validate": "newData.isString() && newData.val().length <= 12" },
+      "t": { ".validate": "newData.val() === now" },
+      "$other": { ".validate": false }
+    },
     "state": {
       ".read": true,
       "$c": {
