@@ -103,7 +103,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
 
 <div class="hud-top">
   <button class="hbtn icon" id="snd-btn" title="소리 켜기/끄기">🔊</button>
-  <div class="cd-chip" id="cd-chip">🧹 3:00</div>
+  <div class="cd-chip" id="cd-chip">🧹 1:00</div>
   <div class="cd-chip" id="online-chip" style="display:none">👥 1명</div>
   <div class="study-box"><div class="l">오늘 공부한 시간</div><div class="t" id="today-t">00:00:00</div></div>
 </div>
@@ -123,7 +123,7 @@ html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;color:#fff;t
     <div class="intro-face"></div>
     <h1>🏫 민관이교실</h1>
     <p>민관쌤이 교실 앞에서 감독하고 있어요.<br>물건 앞에 가면 버튼이 나와요. <b>책상 엎기, 의자 던지기, 숙제 찢기…</b></p>
-    <p>칠판의 카운트다운이 끝나면 <b>3분마다 교실이 원래대로</b> 돌아와요.</p>
+    <p>칠판의 카운트다운이 끝나면 <b>1분마다 교실이 원래대로</b> 돌아와요.</p>
     <div class="intro-keys" id="intro-keys"></div>
     <div class="name-row">
       <label for="name-input">✏️ 이름</label>
@@ -258,7 +258,7 @@ function staticBox(hx, hy, hz, x, y, z){
   b.position.set(x, y, z); world.addBody(b);
 }
 
-// 움직이는 물건 목록 — 3분마다 home 위치로 돌아감
+// 움직이는 물건 목록 — 1분마다 home 위치로 돌아감
 var objs = [], debris = [], pickList = [];
 function addObj(o){
   var b = o.body;
@@ -865,8 +865,8 @@ function findTarget(){
   return best;
 }
 
-// ── 3분마다 원상복구 (모든 기기가 같은 시각에 돌아오도록 실제 시계 기준) ──
-var CYCLE = 180, RESET_ANIM = 1.3;
+// ── 1분마다 원상복구 (모든 기기가 같은 시각에 돌아오도록 실제 시계 기준) ──
+var CYCLE = 60, RESET_ANIM = 1.3;
 function serverNow(){ return Date.now() + (netOffset || 0); }   // 같이 접속 중이면 서버 시계 기준
 function remainSec(){ return CYCLE - (serverNow() / 1000) % CYCLE; }
 function cycleId(){ return Math.floor(serverNow() / 1000 / CYCLE); }
@@ -884,7 +884,7 @@ function startReset(){
   });
   objs.forEach(function(o){ o.spilled = false; o.lastSig = null; o.synced = false; o.pendPose = null; });
   syncDue = 0;
-  if (netDb) netDb.ref('state/' + (cycleId() - 1)).remove().catch(function(){});   // 지난 3분의 기록 정리
+  if (netDb) netDb.ref('state/' + (cycleId() - 1)).remove().catch(function(){});   // 지난 1분의 기록 정리
   resetting = RESET_ANIM; heat = 0;
   var fl = document.getElementById('flash'); fl.style.opacity = '.55'; setTimeout(function(){ fl.style.opacity = '0'; }, 120);
   sfxChime();
@@ -1384,7 +1384,7 @@ function netStart(){
 // ── 물건도 같이 ──
 // events/{push} = { o:물건번호, k:종류, n:한 학생 이름, by, p:[위치3, 회전4, 속도3, 회전속도3], d:[방향x,z], t }
 //   → 다른 화면에서도 같은 출발 상태로 물리가 돌아서 같이 날아감
-// state/{3분주기}/{물건번호} = 멈춘 뒤의 최종 위치 (g:찢어짐, sp:쓰레기 쏟아짐) → 위치 오차 보정 + 늦게 온 학생용
+// state/{1분주기}/{물건번호} = 멈춘 뒤의 최종 위치 (g:찢어짐, sp:쓰레기 쏟아짐) → 위치 오차 보정 + 늦게 온 학생용
 var netDb = null, seenEv = {}, syncDue = 0, stateRef = null, stateCycle = -1;
 function r3(v){ return Math.round(v * 1000) / 1000; }
 function netAction(o){
