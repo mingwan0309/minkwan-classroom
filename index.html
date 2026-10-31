@@ -149,8 +149,8 @@ var MOBILE = IS_TOUCH && IS_COARSE;
 // ── 학생 이름 (말풍선용) ──
 var myName = '';
 try { myName = localStorage.getItem('mk_class_name') || ''; } catch(e) {}
-function callName(){
-  var n = String(myName || '').trim();
+function callName(other){
+  var n = String((other === undefined ? myName : other) || '').trim();
   if (!n) return '';
   if (n.length === 3) n = n.slice(1);           // 김민관 → 민관
   var last = n.charCodeAt(n.length - 1);
@@ -531,17 +531,20 @@ function makeHomework(x, y, z, rot){
   return addObj({ mesh: g, body: b, kind: 'hw', light: true });
 }
 var bookColors = [0xef4444, 0x3b82f6, 0x22c55e, 0xf59e0b, 0x8b5cf6];
+// 같이 접속하는 모든 기기에서 책·숙제 위치가 똑같아야 하므로 고정 시드 난수 사용
+var seedS = 20261031;
+function srand(){ seedS = (seedS * 1103515245 + 12345) & 0x7fffffff; return seedS / 0x7fffffff; }
 COLS.forEach(function(x, ci){
   ROWS.forEach(function(z, ri){
     var mine = (ci === MY_COL && ri === MY_ROW);
     makeDesk(x, z, mine);
     if (mine) return;
     if ((ci * 3 + ri) % 3 !== 0) {   // 책
-      var bk = makeBody(x - 0.25 + (Math.random() - 0.5) * 0.1, 0.79, z + (Math.random() - 0.5) * 0.1, [[0.3, 0.05, 0.22, lam(bookColors[(ci + ri) % 5]), 0, 0, 0]], 0.6, { kind: 'book', light: true });
-      bk.mesh.rotation.y = (Math.random() - 0.5) * 0.6;
+      var bk = makeBody(x - 0.25 + (srand() - 0.5) * 0.1, 0.79, z + (srand() - 0.5) * 0.1, [[0.3, 0.05, 0.22, lam(bookColors[(ci + ri) % 5]), 0, 0, 0]], 0.6, { kind: 'book', light: true });
+      bk.mesh.rotation.y = (srand() - 0.5) * 0.6;
       addObj(bk);
     }
-    if ((ci + ri) % 2 === 0) makeHomework(x + 0.24, 0.768, z + 0.02, (Math.random() - 0.5) * 0.5);
+    if ((ci + ri) % 2 === 0) makeHomework(x + 0.24, 0.768, z + 0.02, (srand() - 0.5) * 0.5);
   });
 });
 // 내 자리 꾸미기: 펼친 노트 + 연필 + 이름표 + 빛나는 바닥
@@ -735,13 +738,16 @@ var CHAOS = {
   angry: ['그만!!! 진짜 그만!!', '{N}지금 당장 멈춰!', '다 같이 남아서 청소할래?!', '{N}마지막 경고다! 하지 마!']
 };
 var heat = 0, lastChaosSay = 0;
-function chaos(kind, force){
+function chaos(kind, force, who){   // who: 다른 학생이 한 경우 그 학생 이름
   heat += kind === 'hit' ? 1.5 : 1;
   var now = performance.now();
   if (!force && now - lastChaosSay < 1400) return;
   lastChaosSay = now;
   var angry = heat >= 4 && kind !== 'hit';
-  say(pick(angry ? CHAOS.angry : CHAOS[kind]), true, 3.2);
+  var line = pick(angry ? CHAOS.angry : CHAOS[kind]);
+  if (who !== undefined) { var cn = callName(who); line = line.indexOf('{N}') >= 0 ? line.replace('{N}', cn ? cn + ', ' : '') : (cn ? cn + ', ' : '') + line; }
+  say(line, true, 3.2);
+  if (who !== undefined) return;   // 다른 학생 일이면 나를 가리키지는 않음
   if (angry || kind === 'hit') { T.mode = 'scold'; T.scoldT = angry ? 3.5 : 2.5; }
 }
 
@@ -803,9 +809,10 @@ function tear(o){
   }
   sfxRip();
 }
-function spill(o){
+function spill(o, dir){
   o.mesh.children.forEach(function(c){ if (c.name === 'paper') c.visible = false; });
-  var a = awayDir(o), p = o.body.position;
+  o.spilled = true;
+  var a = dir || awayDir(o), p = o.body.position;
   for (var i = 0; i < 7; i++) {
     var m = new THREE.Mesh(new THREE.IcosahedronGeometry(0.055, 0), lam(i % 3 ? 0xf1f5f9 : 0xfde68a));
     var pb = new CANNON.Body({ mass: 0.02, linearDamping: 0.2, angularDamping: 0.3 });
@@ -832,6 +839,7 @@ function doAction(){
     case 'ball': kick(o, 10, 3.2); break;
   }
   chaos(o.kind);
+  netAction(o);
   target = null;
 }
 // 지금 바라보는 물건 찾기: 화면 가운데 조준점 → 없으면 가까이 있고 앞쪽에 있는 것
@@ -859,7 +867,9 @@ function findTarget(){
 
 // ── 3분마다 원상복구 (모든 기기가 같은 시각에 돌아오도록 실제 시계 기준) ──
 var CYCLE = 180, RESET_ANIM = 1.3;
-function remainSec(){ return CYCLE - (Date.now() / 1000) % CYCLE; }
+function serverNow(){ return Date.now() + (netOffset || 0); }   // 같이 접속 중이면 서버 시계 기준
+function remainSec(){ return CYCLE - (serverNow() / 1000) % CYCLE; }
+function cycleId(){ return Math.floor(serverNow() / 1000 / CYCLE); }
 var lastRemain = remainSec(), resetting = 0, shownSec = -1;
 function startReset(){
   debris.forEach(function(d){ world.remove(d.body); scene.remove(d.mesh); d.mesh.geometry.dispose(); });
@@ -872,6 +882,9 @@ function startReset(){
     o.gone = false; o.mesh.visible = true;
     o.mesh.children.forEach(function(c){ if (c.name === 'paper') c.visible = true; });
   });
+  objs.forEach(function(o){ o.spilled = false; o.lastSig = null; o.synced = false; o.pendPose = null; });
+  syncDue = 0;
+  if (netDb) netDb.ref('state/' + (cycleId() - 1)).remove().catch(function(){});   // 지난 3분의 기록 정리
   resetting = RESET_ANIM; heat = 0;
   var fl = document.getElementById('flash'); fl.style.opacity = '.55'; setTimeout(function(){ fl.style.opacity = '0'; }, 120);
   sfxChime();
@@ -1147,6 +1160,7 @@ function update(dt){
     if (b.position.y < -1 || Math.abs(b.position.x) > RX + 1 || b.position.z < RZ_FRONT - 1 || b.position.z > RZ_BACK + 1) {   // 벽 밖으로 빠지면 제자리로
       b.position.set(o.homeP.x, o.homeP.y, o.homeP.z); b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
     }
+    if (o.pendPose && b.sleepState === CANNON.Body.SLEEPING) { var pp = o.pendPose; o.pendPose = null; applyPose(objs.indexOf(o), pp); }
     o.mesh.position.copy(b.position); o.mesh.quaternion.copy(b.quaternion);
   });
   debris.forEach(function(d){
@@ -1165,7 +1179,7 @@ function update(dt){
 
   // ── 원상복구 카운트다운 ──
   var rem = remainSec();
-  if (rem > lastRemain + 1) startReset();
+  if (rem > lastRemain + 1 && lastRemain < 5) startReset();   // 0을 지나 다시 3:00이 될 때만 (서버 시계 보정으로 튀는 건 무시)
   lastRemain = rem;
   var sec = Math.ceil(rem); if (sec > CYCLE) sec = CYCLE;
   var shownKey = resetting > 0 ? -2 : sec;
@@ -1361,8 +1375,87 @@ function netStart(){
     });
     var pl = db.ref('players');
     pl.on('child_added', netUpsert); pl.on('child_changed', netUpsert); pl.on('child_removed', netRemove);
+    netDb = db;
+    db.ref('events').orderByChild('t').startAt(serverNow() - 3000).on('child_added', onRemoteEvent);
+    netWatchState();
     onlineChip.style.display = '';
   } catch(e) { console.warn('[민관이교실] 같이 접속 연결 실패', e); netRef = null; }
+}
+// ── 물건도 같이 ──
+// events/{push} = { o:물건번호, k:종류, n:한 학생 이름, by, p:[위치3, 회전4, 속도3, 회전속도3], d:[방향x,z], t }
+//   → 다른 화면에서도 같은 출발 상태로 물리가 돌아서 같이 날아감
+// state/{3분주기}/{물건번호} = 멈춘 뒤의 최종 위치 (g:찢어짐, sp:쓰레기 쏟아짐) → 위치 오차 보정 + 늦게 온 학생용
+var netDb = null, seenEv = {}, syncDue = 0, stateRef = null, stateCycle = -1;
+function r3(v){ return Math.round(v * 1000) / 1000; }
+function netAction(o){
+  if (!netDb) return;
+  var b = o.body, ev = { o: objs.indexOf(o), k: o.kind, n: myName || '', by: netId, t: firebase.database.ServerValue.TIMESTAMP };
+  if (!o.gone) ev.p = [b.position.x, b.position.y, b.position.z, b.quaternion.x, b.quaternion.y, b.quaternion.z, b.quaternion.w,
+    b.velocity.x, b.velocity.y, b.velocity.z, b.angularVelocity.x, b.angularVelocity.y, b.angularVelocity.z].map(r3);
+  if (o.kind === 'trash') ev.d = awayDir(o).map(r3);
+  var ref = netDb.ref('events').push();
+  ref.set(ev).catch(function(e){ console.warn('[민관이교실] 행동 보내기 실패', e); });
+  setTimeout(function(){ ref.remove().catch(function(){}); }, 15000);
+  syncDue = performance.now() + 5000;
+}
+function onRemoteEvent(snap){
+  var e = snap.val();
+  if (!e || e.by === netId || seenEv[snap.key]) return;
+  seenEv[snap.key] = 1;
+  if (typeof e.t === 'number' && serverNow() - e.t > 5000) return;   // 오래된 건 무시
+  var o = objs[e.o];
+  if (!o || o.anim || o.kind !== e.k) return;
+  if (e.k === 'hw') { if (!o.gone) tear(o); }
+  else if (!o.gone && Array.isArray(e.p) && e.p.length === 13) {
+    var b = o.body, p = e.p;
+    b.wakeUp();
+    b.position.set(p[0], p[1], p[2]); b.quaternion.set(p[3], p[4], p[5], p[6]);
+    b.velocity.set(p[7], p[8], p[9]); b.angularVelocity.set(p[10], p[11], p[12]);
+    wakeNear(b.position, 1.6);
+    if (e.k === 'trash' && !o.spilled) spill(o, Array.isArray(e.d) ? e.d : null);
+    sfxWhoosh();
+  }
+  o.lastSig = null;
+  chaos(e.k, false, String(e.n || '').slice(0, 12));
+}
+function poseSig(v){ return [v.x, v.y, v.z, v.qx, v.qy, v.qz, v.qw, v.g ? 1 : 0, v.sp ? 1 : 0].join(','); }
+function applyPose(i, v){
+  var o = objs[i];
+  if (!o || o.anim || !v || typeof v.x !== 'number') return;
+  o.lastSig = poseSig(v); o.synced = true;
+  if (v.sp && o.kind === 'trash' && !o.spilled) { o.mesh.children.forEach(function(c){ if (c.name === 'paper') c.visible = false; }); o.spilled = true; }
+  if (v.g) { if (!o.gone) { world.remove(o.body); o.mesh.visible = false; o.gone = true; } return; }   // 늦게 온 학생: 찢긴 숙제는 그냥 없음
+  if (o.gone) return;
+  var b = o.body;
+  if (b.sleepState !== CANNON.Body.SLEEPING && b.velocity.lengthSquared() > 0.04) { o.pendPose = v; return; }   // 아직 굴러가는 중이면 멈춘 뒤에
+  b.position.set(v.x, v.y, v.z); b.quaternion.set(v.qx, v.qy, v.qz, v.qw);
+  b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0);
+  b.aabbNeedsUpdate = true; b.sleep();
+}
+function onStateSnap(snap){ applyPose(+snap.key, snap.val()); }
+function netWatchState(){
+  var c = cycleId();
+  if (c === stateCycle) return;
+  if (stateRef) stateRef.off();
+  stateCycle = c;
+  stateRef = netDb.ref('state/' + c);
+  stateRef.on('child_added', onStateSnap); stateRef.on('child_changed', onStateSnap);
+}
+function netSyncPoses(){
+  var upd = {}, c = cycleId(), n = 0;
+  objs.forEach(function(o, i){
+    if (o.anim) return;
+    var b = o.body, q = b.quaternion, h = o.homeQ;
+    var atHome = !o.gone && !o.spilled && Math.hypot(b.position.x - o.homeP.x, b.position.y - o.homeP.y, b.position.z - o.homeP.z) < 0.02 &&
+      Math.abs(q.x * h.x + q.y * h.y + q.z * h.z + q.w * h.w) > 0.9998;
+    if (atHome && !o.synced) return;
+    var v = { x: r3(b.position.x), y: r3(b.position.y), z: r3(b.position.z), qx: r3(b.quaternion.x), qy: r3(b.quaternion.y), qz: r3(b.quaternion.z), qw: r3(b.quaternion.w), g: !!o.gone, sp: !!o.spilled };
+    var sig = poseSig(v);
+    if (o.lastSig === sig) return;
+    o.lastSig = sig; o.synced = true;
+    upd[c + '/' + i] = v; n++;
+  });
+  if (n) netDb.ref('state').update(upd).catch(function(e){ console.warn('[민관이교실] 위치 맞추기 실패', e); });
 }
 function normYaw(a){ var t = Math.PI * 2; return +(((a % t) + t) % t).toFixed(2); }
 var netLast = null, netSendT = 0, netBeatT = 0;
@@ -1378,6 +1471,14 @@ function netUpdate(dt){
     var changed = !netLast || Math.abs(player.x - netLast.x) > 0.03 || Math.abs(player.z - netLast.z) > 0.03 ||
       Math.abs(angDiff(player.yaw, netLast.y)) > 0.08 || !!player.seated !== netLast.s;
     if ((changed && netSendT <= 0) || netBeatT <= 0) { netSend(); netSendT = 0.12; netBeatT = 10; }   // 움직일 때 초당 8번, 가만히 있으면 10초마다
+  }
+  if (netDb) {
+    netWatchState();
+    // 내가 건드린 물건들이 다 멈추면(또는 최대 13초 뒤) 최종 위치를 올려서 모두의 화면을 맞춤
+    if (syncDue && performance.now() > syncDue && resetting <= 0) {
+      var still = !objs.some(function(o){ return !o.gone && !o.anim && o.body.sleepState !== CANNON.Body.SLEEPING && o.body.velocity.lengthSquared() > 0.01; });
+      if (still || performance.now() > syncDue + 8000) { syncDue = 0; netSyncPoses(); }
+    }
   }
   var now = Date.now() + netOffset, count = netRef ? 1 : 0, k = Math.min(1, dt * 10);
   for (var id in others) {
@@ -1450,7 +1551,7 @@ updateSeatUI();
 
 // 점검용
 window.__classroom = { player: player, teacher: T, tg: teacher, say: say, setWander: function(v){ wander = v; },
-  objs: objs, debris: debris, doAction: doAction, getTarget: function(){ return target; }, setTarget: function(o){ target = o; }, reset: startReset, world: world };
+  objs: objs, debris: debris, doAction: doAction, getTarget: function(){ return target; }, setTarget: function(o){ target = o; }, reset: startReset, world: world, syncPoses: function(){ if (netDb) netSyncPoses(); } };
 })();
 </script>
 </body>
