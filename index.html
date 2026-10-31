@@ -946,7 +946,7 @@ actBtn.addEventListener('touchstart', function(e){ e.stopPropagation(); }, { pas
 window.addEventListener('mouseup', function(){ dragging = false; });
 document.addEventListener('mousemove', function(e){
   if (locked) look(e.movementX * 0.0022, e.movementY * 0.0022);
-  else if (dragging && !MOBILE) look(e.movementX * 0.005, e.movementY * 0.005);
+  else if (dragging) look(e.movementX * 0.005, e.movementY * 0.005);   // 터치 노트북 등 '폰 모드'로 잡혀도 마우스로 끌면 돌아가게
 });
 function look(dx, dy){
   player.yaw -= dx;
